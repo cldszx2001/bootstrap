@@ -1,10 +1,14 @@
 /**
  * --------------------------------------------------------------------------
- * Bootstrap (v4.1.3): tooltip.js
+ * Bootstrap (v4.3.1): tooltip.js
  * Licensed under MIT (https://github.com/twbs/bootstrap/blob/master/LICENSE)
  * --------------------------------------------------------------------------
  */
 
+import {
+  DefaultWhitelist,
+  sanitizeHtml
+} from './tools/sanitizer'
 import $ from 'jquery'
 import Popper from 'popper.js'
 import Util from './util'
@@ -15,13 +19,14 @@ import Util from './util'
  * ------------------------------------------------------------------------
  */
 
-const NAME               = 'tooltip'
-const VERSION            = '4.1.3'
-const DATA_KEY           = 'bs.tooltip'
-const EVENT_KEY          = `.${DATA_KEY}`
-const JQUERY_NO_CONFLICT = $.fn[NAME]
-const CLASS_PREFIX       = 'bs-tooltip'
-const BSCLS_PREFIX_REGEX = new RegExp(`(^|\\s)${CLASS_PREFIX}\\S+`, 'g')
+const NAME                  = 'tooltip'
+const VERSION               = '4.3.1'
+const DATA_KEY              = 'bs.tooltip'
+const EVENT_KEY             = `.${DATA_KEY}`
+const JQUERY_NO_CONFLICT    = $.fn[NAME]
+const CLASS_PREFIX          = 'bs-tooltip'
+const BSCLS_PREFIX_REGEX    = new RegExp(`(^|\\s)${CLASS_PREFIX}\\S+`, 'g')
+const DISALLOWED_ATTRIBUTES = ['sanitize', 'whiteList', 'sanitizeFn']
 
 const DefaultType = {
   animation         : 'boolean',
@@ -32,10 +37,13 @@ const DefaultType = {
   html              : 'boolean',
   selector          : '(string|boolean)',
   placement         : '(string|function)',
-  offset            : '(number|string)',
+  offset            : '(number|string|function)',
   container         : '(string|element|boolean)',
   fallbackPlacement : '(string|array)',
-  boundary          : '(string|element)'
+  boundary          : '(string|element)',
+  sanitize          : 'boolean',
+  sanitizeFn        : '(null|function)',
+  whiteList         : 'object'
 }
 
 const AttachmentMap = {
@@ -60,7 +68,10 @@ const Default = {
   offset            : 0,
   container         : false,
   fallbackPlacement : 'flip',
-  boundary          : 'scrollParent'
+  boundary          : 'scrollParent',
+  sanitize          : true,
+  sanitizeFn        : null,
+  whiteList         : DefaultWhitelist
 }
 
 const HoverState = {
@@ -244,8 +255,9 @@ class Tooltip {
     if (this.isWithContent() && this._isEnabled) {
       $(this.element).trigger(showEvent)
 
+      const shadowRoot = Util.findShadowRoot(this.element)
       const isInTheDom = $.contains(
-        this.element.ownerDocument.documentElement,
+        shadowRoot !== null ? shadowRoot : this.element.ownerDocument.documentElement,
         this.element
       )
 
@@ -272,8 +284,7 @@ class Tooltip {
       const attachment = this._getAttachment(placement)
       this.addAttachmentClass(attachment)
 
-      const container = this.config.container === false ? document.body : $(document).find(this.config.container)
-
+      const container = this._getContainer()
       $(tip).data(this.constructor.DATA_KEY, this)
 
       if (!$.contains(this.element.ownerDocument.documentElement, this.tip)) {
@@ -285,9 +296,7 @@ class Tooltip {
       this._popper = new Popper(this.element, tip, {
         placement: attachment,
         modifiers: {
-          offset: {
-            offset: this.config.offset
-          },
+          offset: this._getOffset(),
           flip: {
             behavior: this.config.fallbackPlacement
           },
@@ -421,18 +430,27 @@ class Tooltip {
   }
 
   setElementContent($element, content) {
-    const html = this.config.html
     if (typeof content === 'object' && (content.nodeType || content.jquery)) {
       // Content is a DOM node or a jQuery
-      if (html) {
+      if (this.config.html) {
         if (!$(content).parent().is($element)) {
           $element.empty().append(content)
         }
       } else {
         $element.text($(content).text())
       }
+
+      return
+    }
+
+    if (this.config.html) {
+      if (this.config.sanitize) {
+        content = sanitizeHtml(content, this.config.whiteList, this.config.sanitizeFn)
+      }
+
+      $element.html(content)
     } else {
-      $element[html ? 'html' : 'text'](content)
+      $element.text(content)
     }
   }
 
@@ -449,6 +467,37 @@ class Tooltip {
   }
 
   // Private
+
+  _getOffset() {
+    const offset = {}
+
+    if (typeof this.config.offset === 'function') {
+      offset.fn = (data) => {
+        data.offsets = {
+          ...data.offsets,
+          ...this.config.offset(data.offsets, this.element) || {}
+        }
+
+        return data
+      }
+    } else {
+      offset.offset = this.config.offset
+    }
+
+    return offset
+  }
+
+  _getContainer() {
+    if (this.config.container === false) {
+      return document.body
+    }
+
+    if (Util.isElement(this.config.container)) {
+      return $(this.config.container)
+    }
+
+    return $(document).find(this.config.container)
+  }
 
   _getAttachment(placement) {
     return AttachmentMap[placement.toUpperCase()]
@@ -607,9 +656,18 @@ class Tooltip {
   }
 
   _getConfig(config) {
+    const dataAttributes = $(this.element).data()
+
+    Object.keys(dataAttributes)
+      .forEach((dataAttr) => {
+        if (DISALLOWED_ATTRIBUTES.indexOf(dataAttr) !== -1) {
+          delete dataAttributes[dataAttr]
+        }
+      })
+
     config = {
       ...this.constructor.Default,
-      ...$(this.element).data(),
+      ...dataAttributes,
       ...typeof config === 'object' && config ? config : {}
     }
 
@@ -633,6 +691,10 @@ class Tooltip {
       config,
       this.constructor.DefaultType
     )
+
+    if (config.sanitize) {
+      config.template = sanitizeHtml(config.template, config.whiteList, config.sanitizeFn)
+    }
 
     return config
   }
